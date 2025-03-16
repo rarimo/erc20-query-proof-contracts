@@ -9,7 +9,7 @@ import { getInterfaceID } from "@solarity/hardhat-habits";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 
-import { Reverter, CURRENT_DATE, getQueryInputs, encodeDate } from "@test-helpers";
+import { Reverter, CURRENT_DATE, getQueryInputs, encodeDate, createDG1Data } from "@test-helpers";
 
 import { ProofqueryIdentityGroth16, queryIdentity } from "@zkit";
 
@@ -166,6 +166,35 @@ describe("ClaimableToken", () => {
       )
         .to.emit(claimableToken, "Transfer")
         .withArgs(ethers.ZeroAddress, USER2.address, REWARD_AMOUNT);
+    });
+  });
+
+  describe("edge cases", () => {
+    it("should revert if passport expired", async () => {
+      const dg1 = createDG1Data({
+        citizenship: "ABW",
+        name: "Somebody",
+        nameResidual: "",
+        documentNumber: "",
+        expirationDate: "221210",
+        birthDate: "221210",
+        sex: "M",
+        nationality: "ABW",
+      });
+
+      const eventId = await claimableToken.getEventId(USER2.address);
+      const eventData = await claimableToken.getEventData();
+
+      const inputs = getQueryInputs(
+        eventId,
+        eventData,
+        await claimableToken.IDENTITY_LIMIT(),
+        await claimableToken.getIdentityCreationTimestampUpperBound(),
+        123n,
+        dg1,
+      );
+
+      await expect(query.generateProof(inputs)).to.be.rejectedWith("Error in template QueryIdentity_332 line: 158");
     });
   });
 
