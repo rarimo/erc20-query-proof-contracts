@@ -41,6 +41,7 @@ contract ClaimableToken is
     uint256 public claimingStartTimestamp;
 
     mapping(uint256 nullifier => bool) public isClaimed;
+    mapping(address user => bool) public isClaimedByAddress;
 
     error InvalidRegistrationRoot(bytes32 registrationRoot_);
     error DateTooFar(uint256 currentDate, uint256 parsedTimestamp, uint256 blockTimestamp);
@@ -73,6 +74,7 @@ contract ClaimableToken is
     ) external {
         require(!isClaimed[userData_.nullifier], AlreadyClaimed(userData_.nullifier));
         isClaimed[userData_.nullifier] = true;
+        isClaimedByAddress[receiver_] = true;
 
         require(
             IPoseidonSMT(registrationSMT).isRootValid(registrationRoot_),
@@ -138,6 +140,10 @@ contract ClaimableToken is
 
     function isUserClaimed(uint256 nullifier) public view returns (bool) {
         return isClaimed[nullifier];
+    }
+
+    function isUserClaimedByAddress(address user) public view returns (bool) {
+        return isClaimedByAddress[user];
     }
 
     function _validateDate(uint256 date_) internal view returns (bool, uint256) {
