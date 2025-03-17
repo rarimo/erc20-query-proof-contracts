@@ -121,6 +121,16 @@ describe("ClaimableToken", () => {
       expect(balanceAfter - balanceBefore).to.equal(REWARD_AMOUNT);
     });
 
+    it("should revert if trying to claim token twice", async () => {
+      await claimableToken.claim(registrationRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof));
+
+      await expect(
+        claimableToken.claim(registrationRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof)),
+      )
+        .to.be.revertedWithCustomError(claimableToken, "AlreadyClaimed")
+        .withArgs(proof.publicSignals.nullifier);
+    });
+
     it("should revert if registration root is invalid", async () => {
       const invalidRoot = ethers.randomBytes(32);
 

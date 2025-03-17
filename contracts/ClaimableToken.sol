@@ -40,9 +40,12 @@ contract ClaimableToken is
     uint256 public rewardAmount;
     uint256 public claimingStartTimestamp;
 
+    mapping(uint256 nullifier => bool) public isClaimed;
+
     error InvalidRegistrationRoot(bytes32 registrationRoot_);
     error DateTooFar(uint256 currentDate, uint256 parsedTimestamp, uint256 blockTimestamp);
     error InvalidZKProof(uint256[] pubSignals_);
+    error AlreadyClaimed(uint256 nullifier);
 
     function __ClaimableToken_init(
         uint256 rewardAmount_,
@@ -68,6 +71,9 @@ contract ClaimableToken is
         UserData memory userData_,
         Groth16VerifierHelper.ProofPoints memory zkPoints_
     ) external {
+        require(!isClaimed[userData_.nullifier], AlreadyClaimed(userData_.nullifier));
+        isClaimed[userData_.nullifier] = true;
+
         require(
             IPoseidonSMT(registrationSMT).isRootValid(registrationRoot_),
             InvalidRegistrationRoot(registrationRoot_)
@@ -128,6 +134,10 @@ contract ClaimableToken is
 
     function decimals() public pure override returns (uint8) {
         return 18;
+    }
+
+    function isUserClaimed(uint256 nullifier) public view returns (bool) {
+        return isClaimed[nullifier];
     }
 
     function _validateDate(uint256 date_) internal view returns (bool, uint256) {
