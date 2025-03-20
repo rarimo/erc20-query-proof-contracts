@@ -29,9 +29,11 @@ contract ClaimableToken is
     uint256 public constant PROOF_SIGNALS_COUNT = 23;
     uint256 public constant IDENTITY_LIMIT = type(uint32).max;
 
-    uint256 public constant SELECTOR = 0x1A01; // 0b1101000000001
+    uint256 public constant SELECTOR = 0x9A01; // 0b1101000000001
 
     uint256 public constant ZERO_DATE = 0x303030303030;
+
+    uint256 public constant BIRTHDAY_UPPERBOUND = 0x303430333230; // 040320
 
     address public registrationSMT;
 
@@ -110,7 +112,7 @@ contract ClaimableToken is
         pubSignals_[15] = identityCreationTimestampUpperBound; // input, timestampUpperbound
         pubSignals_[17] = identityCounterUpperBound; // input, identityCounterUpperbound
         pubSignals_[18] = ZERO_DATE; // input, birthDateLowerbound
-        pubSignals_[19] = ZERO_DATE; // input, birthDateUpperbound
+        pubSignals_[19] = BIRTHDAY_UPPERBOUND; // input, birthDateUpperbound
         pubSignals_[20] = currentDate_; // input, expirationDateLowerbound
         pubSignals_[21] = ZERO_DATE; // input, expirationDateUpperbound
 

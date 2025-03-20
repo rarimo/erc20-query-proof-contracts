@@ -6,7 +6,7 @@ import { PrivatequeryIdentityGroth16 } from "@zkit";
 
 import { createDG1Data, getDG1Commitment, getTreePosition, getTreeValue, encodeDate } from "@test-helpers";
 
-export const SELECTOR = 0x1a01n;
+export const SELECTOR = 0x9a01;
 export const ZERO_DATE = BigInt(ethers.toBeHex("0x303030303030"));
 
 export const CURRENT_DATE = encodeDate("241209");
@@ -17,10 +17,12 @@ const dg1 = createDG1Data({
   nameResidual: "",
   documentNumber: "",
   expirationDate: "261210",
-  birthDate: "221210",
+  birthDate: "040319",
   sex: "M",
   nationality: "ABW",
 });
+
+export const BIRTHDAY_UPPERBOUND = encodeDate("040320");
 
 export function getQueryInputs(
   eventId: bigint,
@@ -51,7 +53,7 @@ export function getQueryInputs(
     identityCounterLowerbound: 0n,
     identityCounterUpperbound,
     birthDateLowerbound: ZERO_DATE,
-    birthDateUpperbound: ZERO_DATE,
+    birthDateUpperbound: BIRTHDAY_UPPERBOUND,
     expirationDateLowerbound: CURRENT_DATE,
     expirationDateUpperbound: ZERO_DATE,
     citizenshipMask: 0n,

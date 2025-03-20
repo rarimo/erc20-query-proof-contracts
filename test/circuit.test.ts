@@ -31,4 +31,20 @@ describe("Query Identity Proof test", () => {
 
     await expect(query.generateProof(inputs)).to.be.rejectedWith("Error in template QueryIdentity_332 line: 158");
   });
+
+  it("should revert if birthday upperbound is wrong", async () => {
+    const dg1WithLowExpDate = createDG1Data({
+      citizenship: "ABW",
+      name: "Somebody",
+      nameResidual: "",
+      documentNumber: "",
+      expirationDate: "261210",
+      birthDate: "051210",
+      sex: "M",
+      nationality: "ABW",
+    });
+    const inputs = getQueryInputs(0n, 0n, 1n, 1n, 123n, dg1WithLowExpDate);
+
+    await expect(query.generateProof(inputs)).to.be.rejectedWith("Error in template QueryIdentity_332 line: 190");
+  });
 });
