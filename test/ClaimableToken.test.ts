@@ -1,9 +1,10 @@
 import { expect } from "chai";
+import { AddressLike } from "ethers";
 import { ethers, zkit } from "hardhat";
 
 import { Poseidon } from "@iden3/js-crypto";
 
-import { Groth16Proof } from "@solarity/zkit";
+import { Groth16Proof, NumberLike } from "@solarity/zkit";
 import { getInterfaceID } from "@solarity/hardhat-habits";
 
 import { time } from "@nomicfoundation/hardhat-network-helpers";
@@ -13,8 +14,8 @@ import { Reverter, CURRENT_DATE, getQueryInputs, encodeDate, createDG1Data } fro
 
 import { ProofqueryIdentityGroth16, queryIdentity } from "@zkit";
 
-import { ClaimableToken, IClaimableToken, RegistrationSMTMock } from "@ethers-v6";
-import { Groth16VerifierHelper } from "@/generated-types/ethers/contracts/ClaimableToken";
+import { ClaimableToken, RegistrationSMTMock } from "@ethers-v6";
+import { AQueryProofExecutor } from "@/generated-types/ethers/contracts/ClaimableToken";
 
 describe("ClaimableToken", () => {
   const reverter = new Reverter();
@@ -30,6 +31,11 @@ describe("ClaimableToken", () => {
   let query: queryIdentity;
 
   const REWARD_AMOUNT = ethers.parseEther("100");
+
+  type UserDataStruct = {
+    nullifier: NumberLike;
+    identityCreationTimestamp: NumberLike;
+  };
 
   before(async () => {
     // Date: 241209
@@ -69,7 +75,7 @@ describe("ClaimableToken", () => {
 
   afterEach(reverter.revert);
 
-  function formatProof(data: Groth16Proof): Groth16VerifierHelper.ProofPointsStruct {
+  function formatProof(data: Groth16Proof): AQueryProofExecutor.ProofPointsStruct {
     return {
       a: [data.pi_a[0], data.pi_a[1]],
       b: [
@@ -82,7 +88,7 @@ describe("ClaimableToken", () => {
 
   describe("claim functionality", () => {
     let proof: ProofqueryIdentityGroth16;
-    let userData: IClaimableToken.UserDataStruct;
+    let userData: UserDataStruct;
     let registrationRoot: string;
 
     beforeEach(async () => {
@@ -108,11 +114,23 @@ describe("ClaimableToken", () => {
       await registrationSMT.setValidRoot(registrationRoot);
     });
 
+    function getUserPayload(address: AddressLike, userData: UserDataStruct) {
+      return ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "tuple(uint256, uint256)"],
+        [address, [userData.nullifier, userData.identityCreationTimestamp]],
+      );
+    }
+
     it("should claim tokens successfully", async () => {
       const balanceBefore = await claimableToken.balanceOf(USER1.address);
 
       await expect(
-        claimableToken.claim(registrationRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof)),
+        claimableToken.execute(
+          registrationRoot,
+          CURRENT_DATE,
+          getUserPayload(USER1.address, userData),
+          formatProof(proof.proof),
+        ),
       )
         .to.emit(claimableToken, "Transfer")
         .withArgs(ethers.ZeroAddress, USER1.address, REWARD_AMOUNT);
@@ -122,10 +140,20 @@ describe("ClaimableToken", () => {
     });
 
     it("should revert if trying to claim token twice", async () => {
-      await claimableToken.claim(registrationRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof));
+      await claimableToken.execute(
+        registrationRoot,
+        CURRENT_DATE,
+        getUserPayload(USER1.address, userData),
+        formatProof(proof.proof),
+      );
 
       await expect(
-        claimableToken.claim(registrationRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof)),
+        claimableToken.execute(
+          registrationRoot,
+          CURRENT_DATE,
+          getUserPayload(USER1.address, userData),
+          formatProof(proof.proof),
+        ),
       )
         .to.be.revertedWithCustomError(claimableToken, "AlreadyClaimed")
         .withArgs(proof.publicSignals.nullifier);
@@ -134,23 +162,42 @@ describe("ClaimableToken", () => {
     it("should revert if registration root is invalid", async () => {
       const invalidRoot = ethers.randomBytes(32);
 
-      await expect(claimableToken.claim(invalidRoot, CURRENT_DATE, USER1.address, userData, formatProof(proof.proof)))
+      await expect(
+        claimableToken.execute(
+          invalidRoot,
+          CURRENT_DATE,
+          getUserPayload(USER1.address, userData),
+          formatProof(proof.proof),
+        ),
+      )
         .to.be.revertedWithCustomError(claimableToken, "InvalidRegistrationRoot")
-        .withArgs(invalidRoot);
+        .withArgs(await claimableToken.getRegistrationSMT(), invalidRoot);
     });
 
     it("should revert if date is too far in the past", async () => {
       const pastDate = encodeDate("231201"); // December 1, 2023
 
-      await expect(claimableToken.claim(registrationRoot, pastDate, USER1.address, userData, formatProof(proof.proof)))
-        .to.be.revertedWithCustomError(claimableToken, "DateTooFar")
-        .withArgs(pastDate, 1701388800n, (await time.latest()) + 1);
+      await expect(
+        claimableToken.execute(
+          registrationRoot,
+          pastDate,
+          getUserPayload(USER1.address, userData),
+          formatProof(proof.proof),
+        ),
+      )
+        .to.be.revertedWithCustomError(claimableToken, "InvalidDate")
+        .withArgs(1701388800, (await time.latest()) + 1);
     });
 
     it("should revert if ZK proof is invalid", async () => {
       await expect(
-        claimableToken.claim(registrationRoot, CURRENT_DATE + 1n, USER1.address, userData, formatProof(proof.proof)),
-      ).to.be.revertedWithCustomError(claimableToken, "InvalidZKProof");
+        claimableToken.execute(
+          registrationRoot,
+          CURRENT_DATE + 1n,
+          getUserPayload(USER1.address, userData),
+          formatProof(proof.proof),
+        ),
+      ).to.be.revertedWithCustomError(claimableToken, "InvalidCircomProof");
     });
 
     it("should mint tokens with identity creation timestamp after claimingStartTimestamp", async () => {
@@ -166,13 +213,18 @@ describe("ClaimableToken", () => {
       const recentRoot = ethers.toBeHex(recentProof.publicSignals.idStateRoot, 32);
       await registrationSMT.setValidRoot(recentRoot);
 
-      const recentUserData: IClaimableToken.UserDataStruct = {
+      const recentUserData: UserDataStruct = {
         nullifier: recentProof.publicSignals.nullifier,
         identityCreationTimestamp: recentTimestamp,
       };
 
       await expect(
-        claimableToken.claim(recentRoot, CURRENT_DATE, USER2.address, recentUserData, formatProof(recentProof.proof)),
+        claimableToken.execute(
+          recentRoot,
+          CURRENT_DATE,
+          getUserPayload(USER2.address, recentUserData),
+          formatProof(recentProof.proof),
+        ),
       )
         .to.emit(claimableToken, "Transfer")
         .withArgs(ethers.ZeroAddress, USER2.address, REWARD_AMOUNT);
@@ -211,14 +263,13 @@ describe("ClaimableToken", () => {
   describe("contract management", () => {
     it("should have correct initial values", async () => {
       expect(await claimableToken.rewardAmount()).to.equal(REWARD_AMOUNT);
-      expect(await claimableToken.registrationSMT()).to.equal(await registrationSMT.getAddress());
+      expect(await claimableToken.getRegistrationSMT()).to.equal(await registrationSMT.getAddress());
       expect(await claimableToken.owner()).to.equal(OWNER.address);
       expect(await claimableToken.decimals()).to.equal(18);
     });
 
     it("should support required interfaces", async () => {
       expect(await claimableToken.supportsInterface(await getInterfaceID("IERC165"))).to.be.true;
-      expect(await claimableToken.supportsInterface(await getInterfaceID("IClaimableToken"))).to.be.true;
     });
 
     it("should upgrade the contract by owner", async () => {
