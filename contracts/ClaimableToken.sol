@@ -2,7 +2,6 @@
 pragma solidity ^0.8.28;
 
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -10,34 +9,33 @@ import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/
 
 import {Groth16VerifierHelper} from "@solarity/solidity-lib/libs/zkp/Groth16VerifierHelper.sol";
 
-import {Date2Time} from "@rarimo/passport-contracts/utils/Date2Time.sol";
+import {IPoseidonSMT} from "@rarimo/passport-contracts/interfaces/state/IPoseidonSMT.sol";
+import {AQueryProofExecutor} from "@rarimo/passport-contracts/sdk/AQueryProofExecutor.sol";
+import {PublicSignalsBuilder} from "@rarimo/passport-contracts/sdk/lib/PublicSignalsBuilder.sol";
 
 import {PoseidonUnit3L} from "./libraries/Poseidon.sol";
 
-import {IPoseidonSMT} from "./interfaces/IPoseidonSMT.sol";
-import {IClaimableToken} from "./interfaces/IClaimableToken.sol";
-
 contract ClaimableToken is
-    IClaimableToken,
+    AQueryProofExecutor,
     ERC20Upgradeable,
     ERC165,
     OwnableUpgradeable,
     UUPSUpgradeable
 {
+    using PublicSignalsBuilder for uint256;
+
     using Groth16VerifierHelper for address;
 
-    uint256 public constant PROOF_SIGNALS_COUNT = 23;
+    struct UserData {
+        uint256 nullifier;
+        uint256 identityCreationTimestamp;
+    }
+
     uint256 public constant IDENTITY_LIMIT = type(uint32).max;
 
     uint256 public constant SELECTOR = 0x9A01; // 0b1101000000001
 
-    uint256 public constant ZERO_DATE = 0x303030303030;
-
     uint256 public constant BIRTHDAY_UPPERBOUND = 0x303430333230; // 040320
-
-    address public registrationSMT;
-
-    address public votingVerifier;
 
     uint256 public rewardAmount;
     uint256 public claimingStartTimestamp;
@@ -45,9 +43,6 @@ contract ClaimableToken is
     mapping(uint256 nullifier => bool) public isClaimed;
     mapping(address user => bool) public isClaimedByAddress;
 
-    error InvalidRegistrationRoot(bytes32 registrationRoot_);
-    error DateTooFar(uint256 currentDate, uint256 parsedTimestamp, uint256 blockTimestamp);
-    error InvalidZKProof(uint256[] pubSignals_);
     error AlreadyClaimed(uint256 nullifier);
 
     function __ClaimableToken_init(
@@ -59,32 +54,42 @@ contract ClaimableToken is
     ) external initializer {
         __ERC20_init(name_, symbol_);
         __Ownable_init(_msgSender());
+        __AQueryProofExecutor_init(registrationSMT_, verifier_);
 
         rewardAmount = rewardAmount_;
 
-        votingVerifier = verifier_;
-        registrationSMT = registrationSMT_;
         claimingStartTimestamp = block.timestamp;
     }
 
-    function claim(
-        bytes32 registrationRoot_,
-        uint256 currentDate_,
-        address receiver_,
-        UserData memory userData_,
-        Groth16VerifierHelper.ProofPoints memory zkPoints_
-    ) external {
+    function _beforeVerify(bytes32, uint256, bytes memory userPayload_) public override {
+        (address receiver_, UserData memory userData_) = abi.decode(
+            userPayload_,
+            (address, UserData)
+        );
+
         require(!isClaimed[userData_.nullifier], AlreadyClaimed(userData_.nullifier));
         isClaimed[userData_.nullifier] = true;
         isClaimedByAddress[receiver_] = true;
+    }
 
-        require(
-            IPoseidonSMT(registrationSMT).isRootValid(registrationRoot_),
-            InvalidRegistrationRoot(registrationRoot_)
+    function _afterVerify(bytes32, uint256, bytes memory userPayload_) public override {
+        (address receiver_, UserData memory userData_) = abi.decode(
+            userPayload_,
+            (address, UserData)
         );
 
-        (bool isValidDate_, uint256 parsedTimestamp_) = _validateDate(currentDate_);
-        require(isValidDate_, DateTooFar(currentDate_, parsedTimestamp_, block.timestamp));
+        _mint(receiver_, rewardAmount);
+    }
+
+    function _buildPublicSignals(
+        bytes32,
+        uint256 currentDate_,
+        bytes memory userPayload_
+    ) public override returns (uint256 dataPointer_) {
+        (address receiver_, UserData memory userData_) = abi.decode(
+            userPayload_,
+            (address, UserData)
+        );
 
         /**
          * By default we check that the identity is created before the identityCreationTimestampUpperBound (proposal start)
@@ -101,28 +106,25 @@ contract ClaimableToken is
             identityCounterUpperBound = 1;
         }
 
-        uint256[] memory pubSignals_ = new uint256[](PROOF_SIGNALS_COUNT);
+        dataPointer_ = PublicSignalsBuilder.newPublicSignalsBuilder(SELECTOR, userData_.nullifier);
+        dataPointer_.withEventIdAndData(getEventId(receiver_), getEventData());
+        dataPointer_.withCurrentDate(currentDate_, 1 days);
+        dataPointer_.withTimestampLowerboundAndUpperbound(0, identityCreationTimestampUpperBound);
+        dataPointer_.withBirthDateLowerboundAndUpperbound(
+            PublicSignalsBuilder.ZERO_DATE,
+            BIRTHDAY_UPPERBOUND
+        );
+        dataPointer_.withIdentityCounterLowerbound(0, identityCounterUpperBound);
+        dataPointer_.withExpirationDateLowerboundAndUpperbound(
+            currentDate_,
+            PublicSignalsBuilder.ZERO_DATE
+        );
 
-        pubSignals_[0] = userData_.nullifier; // output, nullifier
-        pubSignals_[9] = getEventId(receiver_); // input, eventId
-        pubSignals_[10] = getEventData(); // input, eventData
-        pubSignals_[11] = uint256(registrationRoot_); // input, idStateRoot
-        pubSignals_[12] = SELECTOR; // input, selector
-        pubSignals_[13] = currentDate_; // input, currentDate
-        pubSignals_[15] = identityCreationTimestampUpperBound; // input, timestampUpperbound
-        pubSignals_[17] = identityCounterUpperBound; // input, identityCounterUpperbound
-        pubSignals_[18] = ZERO_DATE; // input, birthDateLowerbound
-        pubSignals_[19] = BIRTHDAY_UPPERBOUND; // input, birthDateUpperbound
-        pubSignals_[20] = currentDate_; // input, expirationDateLowerbound
-        pubSignals_[21] = ZERO_DATE; // input, expirationDateUpperbound
-
-        require(votingVerifier.verifyProof(zkPoints_, pubSignals_), InvalidZKProof(pubSignals_));
-
-        _mint(receiver_, rewardAmount);
+        return dataPointer_;
     }
 
     function getIdentityCreationTimestampUpperBound() public view returns (uint256) {
-        return claimingStartTimestamp - IPoseidonSMT(registrationSMT).ROOT_VALIDITY();
+        return claimingStartTimestamp - IPoseidonSMT(getRegistrationSMT()).ROOT_VALIDITY();
     }
 
     function getEventId(address receiver_) public view returns (uint256) {
@@ -148,38 +150,11 @@ contract ClaimableToken is
         return isClaimedByAddress[user];
     }
 
-    function _validateDate(uint256 date_) internal view returns (bool, uint256) {
-        uint256[] memory asciiTime = new uint256[](3);
-
-        for (uint256 i = 0; i < 6; ++i) {
-            uint256 asciiNum_ = uint8(date_ >> ((6 - i - 1) * 8)) - 48;
-
-            asciiTime[i / 2] += i % 2 == 0 ? asciiNum_ * 10 : asciiNum_;
-        }
-
-        uint256 parsedTimestamp = Date2Time.timestampFromDate(
-            asciiTime[0] + 2000, // only the last 2 digits of the year are encoded
-            asciiTime[1],
-            asciiTime[2]
-        );
-
-        // +- 1 day validity
-        return (
-            parsedTimestamp > block.timestamp - 1 days &&
-                parsedTimestamp < block.timestamp + 1 days,
-            parsedTimestamp
-        );
-    }
-
     /**
      * @inheritdoc ERC165
      */
-    function supportsInterface(
-        bytes4 interfaceId_
-    ) public view override(IERC165, ERC165) returns (bool) {
-        return
-            interfaceId_ == type(IClaimableToken).interfaceId ||
-            super.supportsInterface(interfaceId_);
+    function supportsInterface(bytes4 interfaceId_) public view override returns (bool) {
+        return super.supportsInterface(interfaceId_);
     }
 
     // solhint-disable-next-line no-empty-blocks
